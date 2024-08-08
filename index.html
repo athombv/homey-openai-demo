@@ -33,6 +33,13 @@
     font-family: "Helvetica", sans-serif;
   }
 
+  .session {
+    margin-bottom: 1em;
+    padding: 1em;
+    background: #00000008;
+    border-radius: 5px;
+  }
+
   .message {}
 
   .message p {
@@ -51,57 +58,57 @@
 <script src="https://cdn.jsdelivr.net/npm/dat.gui@0.7.9/build/dat.gui.min.js"></script>
 <script src="https://cdn.athom.com/homey-api/3.6.2.js"></script>
 <script type="text/javascript">
-  let user;
-  let homey;
-  let homeyApi;
-  let devices;
-  let zones;
-
-  const deviceIdsByNumber = {};
-
-  let state = 'idle';
-  let mediaRecorder;
-  let audioPlayer;
-
-  // https://openai.com/api/pricing/
-  const COSTS_PER_TOKEN = { // in USD
-    'gpt-4o': {
-      input: 5.00 / 1000000,
-      output: 15.00 / 1000000,
-    },
-    'gpt-4o-mini': {
-      input: 0.150 / 1000000,
-      output: 0.600 / 1000000,
-    },
-  }
-
-  const $status = document.getElementById('status');
-  const $log = document.getElementById('log');
-
-  // dat.gui
-  const settings = {
-    apiKey: new URL(window.location).searchParams.get('api_key') || localStorage.getItem('apiKey') || '',
-    ttsVoice: 'nova',
-    ttsModel: 'tts-1-hd',
-    chatModel: 'gpt-4o', // Note: gp-4o-mini has much more incorrect results
-  };
-
-  const gui = new dat.GUI();
-  gui.add(settings, 'apiKey').name('OpenAI API Key').onChange(value => {
-    localStorage.setItem('apiKey', value);
-  });
-  gui.add(settings, 'ttsVoice', ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer']).name('TTS Voice');
-  gui.add(settings, 'ttsModel', ['tts-1', 'tts-1-hd']).name('TTS Model');
-  gui.add(settings, 'chatModel', ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-4']).name('Chat Model');
-
-  // Homey API
-  const athomCloudAPI = new AthomCloudAPI({
-    clientId: '66b49b944233725c428a224c',
-    clientSecret: 'ad12da1f42aa72f151c031b80d9447b52099f688',
-    redirectUrl: window.location.origin + window.location.pathname,
-  });
-
   Promise.resolve().then(async () => {
+    // https://openai.com/api/pricing/
+    const COSTS_PER_TOKEN = { // in USD
+      'gpt-4o': {
+        input: 5.00 / 1000000,
+        output: 15.00 / 1000000,
+      },
+      'gpt-4o-mini': {
+        input: 0.150 / 1000000,
+        output: 0.600 / 1000000,
+      },
+    }
+
+    let user;
+    let homey;
+    let homeyApi;
+    let devices;
+    let zones;
+
+    const deviceIdsByNumber = {};
+    let state = 'idle';
+    let mediaRecorder;
+    let audioPlayer;
+
+    const $status = document.getElementById('status');
+    const $log = document.getElementById('log');
+
+    // Initialize dat.gui
+    const settings = {
+      apiKey: new URL(window.location).searchParams.get('api_key') || localStorage.getItem('apiKey') || '',
+      ttsVoice: 'nova',
+      ttsModel: 'tts-1-hd',
+      chatModel: 'gpt-4o', // Note: gp-4o-mini has much more incorrect results
+    };
+
+    const gui = new dat.GUI();
+    gui.add(settings, 'apiKey').name('OpenAI API Key').onChange(value => {
+      localStorage.setItem('apiKey', value);
+    });
+    gui.add(settings, 'ttsVoice', ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer']).name('TTS Voice');
+    gui.add(settings, 'ttsModel', ['tts-1', 'tts-1-hd']).name('TTS Model');
+    gui.add(settings, 'chatModel', ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-4']).name('Chat Model');
+
+    // Initialize Homey API
+    setStatus('Connecting to Homey...');
+    const athomCloudAPI = new AthomCloudAPI({
+      clientId: '66b49b944233725c428a224c',
+      clientSecret: 'ad12da1f42aa72f151c031b80d9447b52099f688',
+      redirectUrl: window.location.origin + window.location.pathname,
+    });
+
     const isLoggedIn = await athomCloudAPI.isLoggedIn();
     if (!isLoggedIn) {
       if (athomCloudAPI.hasAuthorizationCode()) {
@@ -125,7 +132,7 @@
     homeyApi = await homey.authenticate();
     logMessage(`<p>🏠 Homey: ${homey.name}</p>`);
 
-    // Devices
+    // Initialize Devices
     async function initDevice(device) {
       for (const capabilityId of device.capabilities) {
         await device.makeCapabilityInstance(capabilityId, () => { });
@@ -142,7 +149,7 @@
       .on('device.create', device => initDevice(device).catch(err => console.error(err)))
       .on('device.update', device => initDevice(device).catch(err => console.error(err)));
 
-    // Zones
+    // Initialize Zones
     await homeyApi.zones.connect();
     zones = await homeyApi.zones.getZones();
 
@@ -155,150 +162,101 @@
     logMessage('<li>"Turn on bedroom at 2 pm."</li>');
 
     logMessage('<p>&nbsp;</p>');
-  }).catch(err => {
-    logMessage(`<p>❌ ${err.message}</p>`);
-    logMessage('<p>&nbsp;</p>');
-  });
 
-  setStatus();
+    setStatus();
 
-  window.addEventListener('keydown', e => {
-    if (audioPlayer && audioPlayer.paused === false) {
-      audioPlayer.pause();
-
-      setStatus();
-      state = 'idle';
-    }
-
-    if (e.key === ' ' && state === 'idle') {
-      startListening();
-    }
-  });
-
-  window.addEventListener('keyup', e => {
-    if (e.key === ' ' && state === 'listening') {
-      mediaRecorder.stop();
-    }
-  });
-
-  function setStatus(text = 'Hold [Space] to start talking.') {
-    $status.innerText = text;
-  }
-
-  function logMessage(text) {
-    const $message = document.createElement('div');
-    $message.classList.add('message');
-    $message.innerHTML = text;
-    $log.appendChild($message);
-  }
-
-  async function getOptimizedDevicesObject() {
-    const result = {};
-
-    for (const device of Object.values(devices)) {
-      if (!device.capabilitiesObj) continue;
-
-      const deviceClass = device.virtualClass ?? device.class;
-      if (![
-        'light',
-        'socket',
-      ].includes(deviceClass)) continue;
-
-      // Create a string of zones, hierarchically
-      const zonesArray = [];
-      let zone = await device.getZone();
-      zonesArray.push(zone);
-
-      while (await zone.getParent() !== null) {
-        zone = await zone.getParent();
-        zonesArray.push(zone);
+    window.addEventListener('keydown', e => {
+      if (audioPlayer && audioPlayer.paused === false) {
+        audioPlayer.pause();
       }
 
-      // Create the device object
-      // TODO: Use numbers instead of device ID to reduce the amount of used tokens
-      let deviceIdByNumber = deviceIdsByNumber[device.id];
-      if (!deviceIdByNumber) {
-        deviceIdByNumber = deviceIdsByNumber[device.id] = Object.keys(deviceIdsByNumber).length + 1;
-      }
+      if (e.key === ' ' && state === 'idle') {
+        state = 'starting';
 
-      result[deviceIdByNumber] = {
-        name: device.name,
-        type: deviceClass,
-        zone: zonesArray.map(zone => zone.name).reverse().join(' -> '),
-        state: {},
-      };
+        // Start Listening
+        Promise.resolve().then(async () => {
+          const $session = document.createElement('div');
+          $session.classList.add('session');
+          $log.appendChild($session);
 
-      if (device.capabilities.includes('onoff')) {
-        result[deviceIdByNumber].state.on = device.capabilitiesObj?.onoff?.value;
-      }
-
-      if (device.capabilities.includes('dim')) {
-        result[deviceIdByNumber].state.brightness = device.capabilitiesObj?.dim?.value * 100;
-      }
-    }
-
-    return result;
-  }
-
-  async function startListening() {
-    // TODO: Stream audio data to OpenAI API
-    let audioChunks = [];
-
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    mediaRecorder = new MediaRecorder(stream);
-
-    // Initialize MediaRecorder
-    mediaRecorder = new MediaRecorder(stream);
-    mediaRecorder.start();
-
-    mediaRecorder.addEventListener('start', () => {
-      state = 'listening';
-      setStatus('Listening...');
-    });
-
-    mediaRecorder.addEventListener('dataavailable', event => {
-      if (event.data.size > 0) {
-        audioChunks.push(event.data);
-      }
-    });
-
-    mediaRecorder.addEventListener('stop', () => {
-      Promise.resolve().then(async () => {
-        // STT
-        {
-          state = 'analyzing_audio';
-          setStatus('Analyzing Audio...');
-
-          // Create Blob
-          audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
-          audioChunks = [];
-
-          // Initialize request to OpenAI API
-          const formData = new FormData();
-          formData.append('model', 'whisper-1');
-          formData.append('file', audioBlob, 'recording.webm');
-
-          const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
-            method: 'POST',
-            headers: {
-              'Authorization': `Bearer ${settings.apiKey}`,
-            },
-            body: formData,
-          });
-
-          if (!response.ok) {
-            const body = await response.json().catch(err => {
-              throw new Error(response.statusText ?? response.status);
-            });
-            throw new Error(body.error.message ?? response.statusText ?? response.status);
+          function logMessage(text) {
+            const $message = document.createElement('div');
+            $message.classList.add('message');
+            $message.innerHTML = text;
+            $session.appendChild($message);
           }
 
-          const { text } = await response.json();
-          logMessage(`<p>🎙️ ${text}</p>`);
-          setStatus(text);
+          ///////////////////////
+          // Step 1 — Stream Microphone to OpenAI API
+          ///////////////////////
+          const inputAudio = await Promise.resolve().then(async () => {
+            let audioChunks = [];
 
-          // Process
-          {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            mediaRecorder = new MediaRecorder(stream);
+
+            // Initialize MediaRecorder
+            mediaRecorder = new MediaRecorder(stream);
+            mediaRecorder.start();
+
+            mediaRecorder.addEventListener('start', () => {
+              state = 'listening';
+              setStatus('Listening...');
+            });
+
+            mediaRecorder.addEventListener('dataavailable', event => {
+              if (event.data.size > 0) {
+                audioChunks.push(event.data);
+              }
+            });
+
+            return new Promise((resolve, reject) => {
+              mediaRecorder.addEventListener('stop', () => {
+
+                // Create Blob
+                audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                resolve(audioBlob);
+              });
+            });
+          });
+
+          ///////////////////////
+          // Step 2 — STT
+          ///////////////////////
+          const inputText = await Promise.resolve().then(async () => {
+            state = 'analyzing_audio';
+            setStatus('Analyzing Audio...');
+
+            // Initialize request to OpenAI API
+            const formData = new FormData();
+            formData.append('model', 'whisper-1');
+            formData.append('file', inputAudio, 'recording.webm');
+
+            const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+              method: 'POST',
+              headers: {
+                'Authorization': `Bearer ${settings.apiKey}`,
+              },
+              body: formData,
+            });
+
+            if (!response.ok) {
+              const body = await response.json().catch(err => {
+                throw new Error(response.statusText ?? response.status);
+              });
+              throw new Error(body.error.message ?? response.statusText ?? response.status);
+            }
+
+            const { text } = await response.json();
+            return text;
+          });
+
+          logMessage(`<p>🎙️ ${inputText}</p>`);
+
+          ///////////////////////
+          // Step 3 — Chat
+          ///////////////////////
+          const outputText = await Promise.resolve().then(async () => {
             state = 'analyzing_text';
             setStatus('Analyzing Text...');
 
@@ -341,7 +299,7 @@
                   },
                   {
                     role: 'user',
-                    content: text,
+                    content: inputText,
                   },
                 ],
               }),
@@ -361,7 +319,6 @@
 
             logMessage(`<p>🤖 ${payload.text}</p>`);
             logMessage(`<p class="subtle">${data.usage.prompt_tokens} input + ${data.usage.completion_tokens} output = ${data.usage.total_tokens} tokens • $${costsInput} + $${costsOutput} = $${costsInput + costsOutput}</p>`);
-            logMessage('<p>&nbsp;</p>');
 
             for (const action of Object.values(payload.actions ?? {})) {
               for (const [deviceNumber, newState] of Object.entries(action)) {
@@ -402,75 +359,148 @@
               }
             }
 
+            return payload.text;
+          });
 
-            // TTS
-            {
-              state = 'speaking';
-              setStatus('Speaking...');
 
-              const response = await fetch('https://api.openai.com/v1/audio/speech', {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                  'Authorization': `Bearer ${settings.apiKey}`
-                },
-                body: JSON.stringify({
-                  input: payload.text,
-                  voice: settings.ttsVoice,
-                  model: settings.ttsModel,
-                }),
-              });
+          ///////////////////////
+          // Step 4 — TTS
+          ///////////////////////
+          await Promise.resolve().then(async () => {
+            state = 'speaking';
+            setStatus('Speaking...');
 
-              if (!response.ok) {
-                throw new Error(response.statusText);
+            const response = await fetch('https://api.openai.com/v1/audio/speech', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${settings.apiKey}`
+              },
+              body: JSON.stringify({
+                input: outputText,
+                voice: settings.ttsVoice,
+                model: settings.ttsModel,
+              }),
+            });
+
+            if (!response.ok) {
+              throw new Error(response.statusText);
+            }
+
+            // Create a new MediaSource
+            const mediaSource = new MediaSource();
+            audioPlayer = new Audio();
+            audioPlayer.src = URL.createObjectURL(mediaSource);
+
+            mediaSource.addEventListener('sourceopen', async () => {
+              const sourceBuffer = mediaSource.addSourceBuffer('audio/mpeg');
+
+              // Function to stream audio data into the source buffer
+              async function appendStream() {
+                const reader = response.body.getReader();
+                const pump = async () => {
+                  const { done, value } = await reader.read();
+                  if (done) {
+                    mediaSource.endOfStream();
+                    return;
+                  }
+                  sourceBuffer.appendBuffer(value);
+                  await new Promise(resolve => {
+                    sourceBuffer.addEventListener('updateend', resolve, { once: true });
+                  });
+                  await pump();
+                };
+                await pump();
               }
 
-              // Create a new MediaSource
-              const mediaSource = new MediaSource();
-              audioPlayer = new Audio();
-              audioPlayer.src = URL.createObjectURL(mediaSource);
+              // Start streaming
+              appendStream();
+            });
 
-              mediaSource.addEventListener('sourceopen', async () => {
-                const sourceBuffer = mediaSource.addSourceBuffer('audio/mpeg');
-
-                // Function to stream audio data into the source buffer
-                async function appendStream() {
-                  const reader = response.body.getReader();
-                  const pump = async () => {
-                    const { done, value } = await reader.read();
-                    if (done) {
-                      mediaSource.endOfStream();
-                      return;
-                    }
-                    sourceBuffer.appendBuffer(value);
-                    await new Promise(resolve => {
-                      sourceBuffer.addEventListener('updateend', resolve, { once: true });
-                    });
-                    await pump();
-                  };
-                  await pump();
-                }
-
-                // Start streaming
-                appendStream();
-              });
-
-              // Play audio as soon as data is available
+            // Play audio as soon as data is available
+            await new Promise((resolve, reject) => {
               audioPlayer.play().catch(err => console.error(err));
-              audioPlayer.addEventListener('ended', () => {
-                setStatus();
-                state = 'idle';
-              });
-            }
-          }
-        }
-      }).catch(err => {
-        logMessage(`<p>❌ ${err.message}</p>`);
-        logMessage('<p>&nbsp;</p>');
+              audioPlayer.addEventListener('error', reject);
+              audioPlayer.addEventListener('pause', () => resolve());
+              audioPlayer.addEventListener('ended', () => resolve());
+            });
+          });
 
-        setStatus();
-        state = 'idle';
-      });
+          setStatus();
+          state = 'idle';
+        }).catch(err => {
+          logMessage(`<p>❌ ${err.message}</p>`);
+
+          setStatus();
+          state = 'idle';
+        });
+      }
     });
-  }
+
+    window.addEventListener('keyup', e => {
+      if (e.key === ' ' && state === 'listening') {
+        mediaRecorder.stop();
+      }
+    });
+
+    function setStatus(text = 'Hold [Space] to start talking.') {
+      $status.innerText = text;
+    }
+
+    function logMessage(text) {
+      const $message = document.createElement('div');
+      $message.classList.add('message');
+      $message.innerHTML = text;
+      $log.appendChild($message);
+    }
+
+    async function getOptimizedDevicesObject() {
+      const result = {};
+
+      for (const device of Object.values(devices)) {
+        if (!device.capabilitiesObj) continue;
+
+        const deviceClass = device.virtualClass ?? device.class;
+        if (![
+          'light',
+          'socket',
+        ].includes(deviceClass)) continue;
+
+        // Create a string of zones, hierarchically
+        const zonesArray = [];
+        let zone = await device.getZone();
+        zonesArray.push(zone);
+
+        while (await zone.getParent() !== null) {
+          zone = await zone.getParent();
+          zonesArray.push(zone);
+        }
+
+        // Create the device object
+        // TODO: Use numbers instead of device ID to reduce the amount of used tokens
+        let deviceIdByNumber = deviceIdsByNumber[device.id];
+        if (!deviceIdByNumber) {
+          deviceIdByNumber = deviceIdsByNumber[device.id] = Object.keys(deviceIdsByNumber).length + 1;
+        }
+
+        result[deviceIdByNumber] = {
+          name: device.name,
+          type: deviceClass,
+          zone: zonesArray.map(zone => zone.name).reverse().join(' -> '),
+          state: {},
+        };
+
+        if (device.capabilities.includes('onoff')) {
+          result[deviceIdByNumber].state.on = device.capabilitiesObj?.onoff?.value;
+        }
+
+        if (device.capabilities.includes('dim')) {
+          result[deviceIdByNumber].state.brightness = device.capabilitiesObj?.dim?.value * 100;
+        }
+      }
+
+      return result;
+    }
+
+  });
 </script>
