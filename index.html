@@ -168,7 +168,7 @@
 
   window.addEventListener('keyup', e => {
     if (e.key === ' ' && state === 'listening') {
-      stopListening();
+      mediaRecorder.stop();
     }
   });
 
@@ -250,40 +250,203 @@
 
     mediaRecorder.addEventListener('stop', () => {
       Promise.resolve().then(async () => {
-        state = 'analyzing';
-        setStatus('Analyzing...');
+        // STT
+        {
+          state = 'analyzing_audio';
+          setStatus('Analyzing Audio...');
 
-        // Create Blob
-        audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
-        audioChunks = [];
+          // Create Blob
+          audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+          audioChunks = [];
 
-        // Initialize request to OpenAI API
-        const formData = new FormData();
-        formData.append('model', 'whisper-1');
-        formData.append('file', audioBlob, 'recording.webm');
+          // Initialize request to OpenAI API
+          const formData = new FormData();
+          formData.append('model', 'whisper-1');
+          formData.append('file', audioBlob, 'recording.webm');
 
-        const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${settings.apiKey}`,
-          },
-          body: formData,
-        });
-
-        if (!response.ok) {
-          const body = await response.json().catch(err => {
-            throw new Error(response.statusText ?? response.status);
+          const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${settings.apiKey}`,
+            },
+            body: formData,
           });
-          throw new Error(body.error.message ?? response.statusText ?? response.status);
+
+          if (!response.ok) {
+            const body = await response.json().catch(err => {
+              throw new Error(response.statusText ?? response.status);
+            });
+            throw new Error(body.error.message ?? response.statusText ?? response.status);
+          }
+
+          const { text } = await response.json();
+          logMessage(`<p>🎙️ ${text}</p>`);
+          setStatus(text);
+
+          // Process
+          {
+            state = 'analyzing_text';
+            setStatus('Analyzing Text...');
+
+            const response = await fetch('https://api.openai.com/v1/chat/completions', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${settings.apiKey}`,
+              },
+              body: JSON.stringify({
+                model: settings.chatModel,
+                response_format: {
+                  type: 'json_object', // TODO: JSON Schema
+                },
+                messages: [
+                  {
+                    role: 'system',
+                    content: 'You are a smart home assistant. You may only answer queries related to smart home, or time. You will change the state of devices, and return the state in the following JSON format: ' + JSON.stringify({
+                      text: '<The textual response. Short and to the point.>',
+                      actions: [
+                        {
+                          '<uuid>': {
+                            // name: '<the name of the device>',
+                            // zone: '<the zone of the device>',
+                            on: '<the new value as boolean, only if changed or if set with a timer>',
+                            brightness: '<the new value as number (1-100), only if changed or if set with a timer>',
+                            delay: '<number, in seconds (1-300), but only if a timer has been requested>'
+                          },
+                        },
+                      ],
+                    }),
+                  },
+                  {
+                    role: 'system',
+                    content: 'The current time is ' + new Date().toLocaleTimeString(),
+                  },
+                  {
+                    role: 'system',
+                    content: 'This is the JSON state of the smart home: ' + JSON.stringify(await getOptimizedDevicesObject()),
+                  },
+                  {
+                    role: 'user',
+                    content: text,
+                  },
+                ],
+              }),
+            });
+
+            if (!response.ok) {
+              throw new Error(response.statusText);
+            }
+
+            const data = await response.json();
+            const content = data.choices[0].message.content;
+            const payload = JSON.parse(content);
+            console.log(JSON.stringify(payload, null, 2));
+
+            const costsInput = COSTS_PER_TOKEN[settings.chatModel]?.input ?? 0 * data.usage.prompt_tokens;
+            const costsOutput = COSTS_PER_TOKEN[settings.chatModel]?.output ?? 0 * data.usage.completion_tokens;
+
+            logMessage(`<p>🤖 ${payload.text}</p>`);
+            logMessage(`<p class="subtle">${data.usage.prompt_tokens} input + ${data.usage.completion_tokens} output = ${data.usage.total_tokens} tokens • $${costsInput} + $${costsOutput} = $${costsInput + costsOutput}</p>`);
+            logMessage('<p>&nbsp;</p>');
+
+            for (const action of Object.values(payload.actions)) {
+              for (const [deviceId, newState] of Object.entries(action)) {
+                const device = devices[deviceId];
+                if (!device) continue;
+
+                const deviceZone = await device.getZone();
+                const delay = newState.delay ?? 0;
+
+                if (newState.on !== undefined) {
+                  if (delay) {
+                    logMessage(`<p>⏳ ${device.name} (${deviceZone.name}): ${newState.on ? 'On' : 'Off'} in ${delay}s</p>`);
+                  } else {
+                    logMessage(`<p>⏩ ${device.name} (${deviceZone.name}): ${newState.on ? 'On' : 'Off'}</p>`);
+                  }
+
+                  setTimeout(() => {
+                    device.setCapabilityValue('onoff', newState.on)
+                      .catch(err => console.error(err));
+                  }, delay * 1000);
+                }
+
+                if (newState.brightness !== undefined) {
+                  if (delay) {
+                    logMessage(`<p>⏳ ${device.name} (${deviceZone.name}): ${newState.brightness}% in ${delay}s</p>`);
+                  } else {
+                    logMessage(`<p>⏩ ${device.name} (${deviceZone.name}): ${newState.brightness}%</p>`);
+                  }
+
+                  setTimeout(() => {
+                    device.setCapabilityValue('dim', newState.brightness / 100)
+                      .catch(err => console.error(err));
+                  }, delay * 1000);
+                }
+              }
+            }
+
+
+            // TTS
+            {
+              state = 'speaking';
+              setStatus('Speaking...');
+
+              const response = await fetch('https://api.openai.com/v1/audio/speech', {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Authorization': `Bearer ${settings.apiKey}`
+                },
+                body: JSON.stringify({
+                  input: payload.text,
+                  voice: settings.ttsVoice,
+                  model: settings.ttsModel,
+                }),
+              });
+
+              if (!response.ok) {
+                throw new Error(response.statusText);
+              }
+
+              // Create a new MediaSource
+              const mediaSource = new MediaSource();
+              audioPlayer = new Audio();
+              audioPlayer.src = URL.createObjectURL(mediaSource);
+
+              mediaSource.addEventListener('sourceopen', async () => {
+                const sourceBuffer = mediaSource.addSourceBuffer('audio/mpeg');
+
+                // Function to stream audio data into the source buffer
+                async function appendStream() {
+                  const reader = response.body.getReader();
+                  const pump = async () => {
+                    const { done, value } = await reader.read();
+                    if (done) {
+                      mediaSource.endOfStream();
+                      return;
+                    }
+                    sourceBuffer.appendBuffer(value);
+                    await new Promise(resolve => {
+                      sourceBuffer.addEventListener('updateend', resolve, { once: true });
+                    });
+                    await pump();
+                  };
+                  await pump();
+                }
+
+                // Start streaming
+                appendStream();
+              });
+
+              // Play audio as soon as data is available
+              audioPlayer.play().catch(err => console.error(err));
+              audioPlayer.addEventListener('ended', () => {
+                setStatus();
+                state = 'idle';
+              });
+            }
+          }
         }
-
-        const { text } = await response.json();
-        logMessage(`<p>🎙️ ${text}</p>`);
-        setStatus(text);
-
-        await process({
-          input: text,
-        });
       }).catch(err => {
         logMessage(`<p>❌ ${err.message}</p>`);
         logMessage('<p>&nbsp;</p>');
@@ -292,182 +455,5 @@
         state = 'idle';
       });
     });
-  }
-
-  function stopListening() {
-    mediaRecorder.stop();
-  }
-
-  async function process({
-    input = 'Turn on all lights',
-    model = settings.chatModel,
-  } = {}) {
-    state = 'processing';
-    setStatus('Processing...');
-
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${settings.apiKey}`,
-      },
-      body: JSON.stringify({
-        model,
-        response_format: {
-          type: 'json_object', // TODO: JSON Schema
-        },
-        messages: [
-          {
-            role: 'system',
-            content: 'You are a smart home assistant. You may only answer queries related to smart home, or time. You will change the state of devices, and return the state in the following JSON format: ' + JSON.stringify({
-              text: '<The textual response. Short and to the point.>',
-              actions: [
-                {
-                  '<uuid>': {
-                    // name: '<the name of the device>',
-                    // zone: '<the zone of the device>',
-                    on: '<the new value as boolean, only if changed or if set with a timer>',
-                    brightness: '<the new value as number (1-100), only if changed or if set with a timer>',
-                    delay: '<number, in seconds (1-300), but only if a timer has been requested>'
-                  },
-                },
-              ],
-            }),
-          },
-          {
-            role: 'system',
-            content: 'The current time is ' + new Date().toLocaleTimeString(),
-          },
-          {
-            role: 'system',
-            content: 'This is the JSON state of the smart home: ' + JSON.stringify(await getOptimizedDevicesObject()),
-          },
-          {
-            role: 'user',
-            content: input,
-          },
-        ],
-      }),
-    });
-
-    if (!response.ok) {
-      throw new Error(response.statusText);
-    }
-
-    const data = await response.json();
-    const content = data.choices[0].message.content;
-    const payload = JSON.parse(content);
-    console.log(JSON.stringify(payload, null, 2));
-
-    const costsInput = COSTS_PER_TOKEN[model]?.input ?? 0 * data.usage.prompt_tokens;
-    const costsOutput = COSTS_PER_TOKEN[model]?.output ?? 0 * data.usage.completion_tokens;
-
-    logMessage(`<p>🤖 ${payload.text}</p>`);
-    logMessage(`<p class="subtle">${data.usage.prompt_tokens} input + ${data.usage.completion_tokens} output = ${data.usage.total_tokens} tokens • $${costsInput} + $${costsOutput} = $${costsInput + costsOutput}</p>`);
-    logMessage('<p>&nbsp;</p>');
-
-    for (const action of Object.values(payload.actions)) {
-      for (const [deviceId, newState] of Object.entries(action)) {
-        const device = devices[deviceId];
-        if (!device) continue;
-
-        const deviceZone = await device.getZone();
-        const delay = newState.delay ?? 0;
-
-        if (newState.on !== undefined) {
-          if (delay) {
-            logMessage(`<p>⏳ ${device.name} (${deviceZone.name}): ${newState.on ? 'On' : 'Off'} in ${delay} seconds</p>`);
-          } else {
-            logMessage(`<p>⏩ ${device.name} (${deviceZone.name}): ${newState.on ? 'On' : 'Off'}</p>`);
-          }
-
-          setTimeout(() => {
-            device.setCapabilityValue('onoff', newState.on)
-              .catch(err => console.error(err));
-          }, delay * 1000);
-        }
-
-        if (newState.brightness !== undefined) {
-          if (delay) {
-            logMessage(`<p>⏳ ${device.name} (${deviceZone.name}): ${newState.brightness}% in ${delay} seconds</p>`);
-          } else {
-            logMessage(`<p>⏩ ${device.name} (${deviceZone.name}): ${newState.brightness}%</p>`);
-          }
-
-          setTimeout(() => {
-            device.setCapabilityValue('dim', newState.brightness / 100)
-              .catch(err => console.error(err));
-          }, delay * 1000);
-        }
-      }
-    }
-
-    await tts({
-      input: payload.text,
-    });
-  }
-
-  async function tts({
-    input = 'Hello world!',
-    model = settings.ttsModel,
-    voice = settings.ttsVoice,
-  } = {}) {
-    state = 'speaking';
-    setStatus('Speaking...');
-
-    const response = await fetch('https://api.openai.com/v1/audio/speech', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${settings.apiKey}`
-      },
-      body: JSON.stringify({
-        input,
-        voice,
-        model,
-      }),
-    });
-
-    if (!response.ok) {
-      throw new Error(response.statusText);
-    }
-
-    // Create a new MediaSource
-    const mediaSource = new MediaSource();
-    audioPlayer = new Audio();
-    audioPlayer.src = URL.createObjectURL(mediaSource);
-
-    mediaSource.addEventListener('sourceopen', async () => {
-      const sourceBuffer = mediaSource.addSourceBuffer('audio/mpeg');
-
-      // Function to stream audio data into the source buffer
-      async function appendStream() {
-        const reader = response.body.getReader();
-        const pump = async () => {
-          const { done, value } = await reader.read();
-          if (done) {
-            mediaSource.endOfStream();
-            return;
-          }
-          sourceBuffer.appendBuffer(value);
-          await new Promise(resolve => {
-            sourceBuffer.addEventListener('updateend', resolve, { once: true });
-          });
-          await pump();
-        };
-        await pump();
-      }
-
-      // Start streaming
-      appendStream();
-    });
-
-    // Play audio as soon as data is available
-    audioPlayer.play().catch(err => console.error(err));
-    audioPlayer.addEventListener('ended', () => {
-      setStatus();
-      state = 'idle';
-    });
-
   }
 </script>
