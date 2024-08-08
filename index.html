@@ -40,8 +40,31 @@
 <div id="status"></div>
 <div id="log"></div>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/dat-gui/0.7.9/dat.gui.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dat.gui@0.7.9/build/dat.gui.min.js"></script>
+<script src="https://cdn.athom.com/homey-api/3.6.2.js"></script>
 <script type="text/javascript">
+  let user;
+  let homey;
+  let homeyApi;
+  let devices;
+  let zones;
+
+  let state = 'idle';
+  let mediaRecorder;
+  let audioPlayer;
+
+  // https://openai.com/api/pricing/
+  const COSTS_PER_TOKEN = { // in USD
+    'gpt-4o': {
+      input: 5.00 / 1000000,
+      output: 15.00 / 1000000,
+    },
+    'gpt-4o-mini': {
+      input: 0.150 / 1000000,
+      output: 0.600 / 1000000,
+    },
+  }
+
   const $status = document.getElementById('status');
   const $log = document.getElementById('log');
 
@@ -50,7 +73,7 @@
     apiKey: new URL(window.location).searchParams.get('api_key') || localStorage.getItem('apiKey') || '',
     ttsVoice: 'nova',
     ttsModel: 'tts-1-hd',
-    chatModel: 'gpt-4o-mini',
+    chatModel: 'gpt-4o', // Note: gp-4o-mini has much more incorrect results
   };
 
   const gui = new dat.GUI();
@@ -61,9 +84,64 @@
   gui.add(settings, 'ttsModel', ['tts-1', 'tts-1-hd']).name('TTS Model');
   gui.add(settings, 'chatModel', ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-4']).name('Chat Model');
 
-  let state = 'idle';
-  let mediaRecorder;
-  let audioPlayer;
+  // Homey API
+  const athomCloudAPI = new AthomCloudAPI({
+    clientId: '66b49b944233725c428a224c',
+    clientSecret: 'ad12da1f42aa72f151c031b80d9447b52099f688',
+    redirectUrl: window.location.origin,
+  });
+
+  Promise.resolve().then(async () => {
+    const isLoggedIn = await athomCloudAPI.isLoggedIn();
+    if (!isLoggedIn) {
+      if (athomCloudAPI.hasAuthorizationCode()) {
+        const token = await athomCloudAPI.authenticateWithAuthorizationCode();
+      } else {
+        window.location.href = athomCloudAPI.getLoginUrl();
+        return;
+      }
+    }
+
+    user = await athomCloudAPI.getAuthenticatedUser();
+    logMessage(`<p>👋 Hi, ${user.firstname}! <a id="signout" href="#">Sign out »</a></p>`);
+
+    document.getElementById('signout').addEventListener('click', async e => {
+      e.preventDefault();
+      await athomCloudAPI.logout();
+      window.location.reload();
+    });
+
+    homey = await user.getFirstHomey();
+    homeyApi = await homey.authenticate();
+    logMessage(`<p>🏠 Homey: ${homey.name}</p>`);
+
+    // Devices
+    async function initDevice(device) {
+      for (const capabilityId of device.capabilities) {
+        await device.makeCapabilityInstance(capabilityId, () => { });
+      }
+    }
+
+    await homeyApi.devices.connect();
+    devices = await homeyApi.devices.getDevices();
+    for (const device of Object.values(devices)) {
+      await initDevice(device);
+    }
+
+    homeyApi.devices
+      .on('device.create', device => initDevice(device).catch(err => console.error(err)))
+      .on('device.update', device => initDevice(device).catch(err => console.error(err)));
+
+    // Zones
+    await homeyApi.zones.connect();
+    zones = await homeyApi.zones.getZones();
+
+    logMessage('<p>✅ Connected!</p>');
+    logMessage('<p>&nbsp;</p>');
+  }).catch(err => {
+    logMessage(`<p>❌ ${err.message}</p>`);
+    logMessage('<p>&nbsp;</p>');
+  });
 
   setStatus();
 
@@ -95,6 +173,49 @@
     $message.classList.add('message');
     $message.innerHTML = text;
     $log.appendChild($message);
+  }
+
+  async function getOptimizedDevicesObject() {
+    const result = {};
+
+    for (const device of Object.values(devices)) {
+      if (!device.capabilitiesObj) continue;
+
+      const deviceClass = device.virtualClass ?? device.class;
+      if (![
+        'light',
+        'socket',
+      ].includes(deviceClass)) continue;
+
+      // Create a string of zones, hierarchically
+      const zonesArray = [];
+      let zone = await device.getZone();
+      zonesArray.push(zone);
+
+      while (await zone.getParent() !== null) {
+        zone = await zone.getParent();
+        zonesArray.push(zone);
+      }
+
+      // Create the device object
+      // TODO: Shorter device ID to reduce the amount of used tokens
+      result[device.id] = {
+        name: device.name,
+        type: deviceClass,
+        zone: zonesArray.map(zone => zone.name).reverse().join(' -> '),
+        state: {},
+      };
+
+      if (device.capabilities.includes('onoff')) {
+        result[device.id].state.on = device.capabilitiesObj?.onoff?.value;
+      }
+
+      if (device.capabilities.includes('dim')) {
+        result[device.id].state.brightness = device.capabilitiesObj?.dim?.value * 100;
+      }
+    }
+
+    return result;
   }
 
   async function startListening() {
@@ -149,7 +270,7 @@
         }
 
         const { text } = await response.json();
-        logMessage(`<p>💁‍♂️ ${text}</p>`);
+        logMessage(`<p>🎙️ ${text}</p>`);
         setStatus(text);
 
         await process({
@@ -195,8 +316,10 @@
               actions: [
                 {
                   '<uuid>': {
-                    on: '<the new value>',
-                    brightness: '<the new value>',
+                    // name: '<the name of the device>',
+                    // zone: '<the zone of the device>',
+                    on: '<the new value as boolean, only if changed>',
+                    brightness: '<the new value as number (1-100), only if changed>',
                     after: '<absolute time in hh:mm:ss, but only if a timer has been requested>'
                   },
                 },
@@ -209,51 +332,7 @@
           },
           {
             role: 'system',
-            content: 'This is the JSON state of the smart home: ' + JSON.stringify({
-              '714d26df-94e3-44a8-b995-c1a963301867': {
-                name: 'My Stupid Light',
-                type: 'light',
-                state: {
-                  on: false,
-                  brightness: 100,
-                },
-                zone: 'Ground Floor - Living Room'
-              },
-              '8cb432c1-38b6-4aa4-b5fc-f2cc5f8f32e5': {
-                name: 'Kitchen Light',
-                type: 'light',
-                state: {
-                  on: false,
-                  brightness: 0,
-                },
-                zone: 'Ground Floor - Kitchen'
-              },
-              'c0721675-4d4f-4bc3-8597-2ad9e3b34121': {
-                name: 'Bedroom Light',
-                type: 'light',
-                state: {
-                  on: true,
-                  brightness: 50,
-                },
-                zone: 'First Floor - Bedroom'
-              },
-              '3080639b-b1c9-4eef-9bc1-8d501f5e56c1': {
-                name: 'Kitchen Plug',
-                type: 'plug',
-                state: {
-                  on: false,
-                  brightness: 0,
-                },
-                zone: 'Ground Floor - Kitchen'
-              },
-              '7b667a90-753b-4548-a817-25b13e444ba9': {
-                name: 'Nest Thermostat',
-                type: 'thermostat',
-                state: {
-                  temperature: 23,
-                },
-              }
-            }),
+            content: 'This is the JSON state of the smart home: ' + JSON.stringify(await getOptimizedDevicesObject()),
           },
           {
             role: 'user',
@@ -272,9 +351,33 @@
     const payload = JSON.parse(content);
     console.log(JSON.stringify(payload, null, 2));
 
+    const costsInput = COSTS_PER_TOKEN[model]?.input ?? 0 * data.usage.prompt_tokens;
+    const costsOutput = COSTS_PER_TOKEN[model]?.output ?? 0 * data.usage.completion_tokens;
+
     logMessage(`<p>🤖 ${payload.text}</p>`);
-    logMessage(`<p class="subtle">${data.usage.prompt_tokens} + ${data.usage.completion_tokens} = ${data.usage.total_tokens} tokens</p>`);
+    logMessage(`<p class="subtle">${data.usage.prompt_tokens} input + ${data.usage.completion_tokens} output = ${data.usage.total_tokens} tokens • $${costsInput} + $${costsOutput} = $${costsInput + costsOutput}</p>`);
     logMessage('<p>&nbsp;</p>');
+
+    for (const action of Object.values(payload.actions)) {
+      for (const [deviceId, newState] of Object.entries(action)) {
+        const device = devices[deviceId];
+        if (!device) continue;
+
+        const deviceZone = await device.getZone();
+
+        if (newState.on !== undefined) {
+          logMessage(`<p>🔌 ${device.name} (${deviceZone.name}): ${newState.on ? 'On' : 'Off'}</p>`);
+          device.setCapabilityValue('onoff', newState.on)
+            .catch(err => console.error(err));
+        }
+
+        if (newState.brightness !== undefined) {
+          logMessage(`<p>💡 ${device.name} (${deviceZone.name}): ${newState.brightness}%</p>`);
+          device.setCapabilityValue('dim', newState.brightness / 100)
+            .catch(err => console.error(err));
+        }
+      }
+    }
 
     await tts({
       input: payload.text,
