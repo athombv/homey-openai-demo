@@ -27,6 +27,8 @@
     height: 20px;
     padding: 1em;
     background: #00000015;
+    font-weight: 600;
+    color: #111;
     backdrop-filter: blur(5px);
     -webkit-backdrop-filter: blur(5px);
     border-bottom: 1px solid #ddd;
@@ -34,21 +36,23 @@
   }
 
   .session {
+    display: flex;
+    flex-direction: column;
     margin-bottom: 1em;
     padding: 1em;
     background: #00000008;
     border-radius: 5px;
   }
 
-  .message {}
-
-  .message p {
-    margin-bottom: 0;
-  }
-
-  .message .subtle {
+  .session .costs {
     opacity: 0.3;
     font-size: 0.8em;
+    order: 99;
+    margin-top: 1em;
+  }
+
+  .message {
+    margin-bottom: 0;
   }
 </style>
 
@@ -59,6 +63,12 @@
 <script src="https://cdn.athom.com/homey-api/3.6.2.js"></script>
 <script type="text/javascript">
   Promise.resolve().then(async () => {
+    // If not Google Chrome, don't continue
+    if (!window.chrome) {
+      alert('This demo requires Google Chrome.');
+      return;
+    }
+
     // https://openai.com/api/pricing/
     const COSTS_PER_TOKEN = { // in USD
       'gpt-4o': {
@@ -179,8 +189,12 @@
           $session.classList.add('session');
           $log.appendChild($session);
 
+          const $sessionCosts = document.createElement('div');
+          $sessionCosts.classList.add('costs');
+          $session.appendChild($sessionCosts);
+
           function logMessage(text) {
-            const $message = document.createElement('div');
+            const $message = document.createElement('p');
             $message.classList.add('message');
             $message.innerHTML = text;
             $session.appendChild($message);
@@ -251,7 +265,7 @@
             return text;
           });
 
-          logMessage(`<p>🎙️ ${inputText}</p>`);
+          logMessage(`🎙️ ${inputText}`);
 
           ///////////////////////
           // Step 3 — Chat
@@ -317,8 +331,8 @@
             const costsInput = COSTS_PER_TOKEN[settings.chatModel]?.input ?? 0 * data.usage.prompt_tokens;
             const costsOutput = COSTS_PER_TOKEN[settings.chatModel]?.output ?? 0 * data.usage.completion_tokens;
 
-            logMessage(`<p>🤖 ${payload.text}</p>`);
-            logMessage(`<p class="subtle">${data.usage.prompt_tokens} input + ${data.usage.completion_tokens} output = ${data.usage.total_tokens} tokens • $${costsInput} + $${costsOutput} = $${costsInput + costsOutput}</p>`);
+            logMessage(`🤖 ${payload.text}`);
+            $sessionCosts.innerHTML = `${data.usage.prompt_tokens} input + ${data.usage.completion_tokens} output = ${data.usage.total_tokens} tokens • $${costsInput} + $${costsOutput} = $${costsInput + costsOutput}`;
 
             for (const action of Object.values(payload.actions ?? {})) {
               for (const [deviceNumber, newState] of Object.entries(action)) {
@@ -333,9 +347,9 @@
 
                 if (newState.on !== undefined) {
                   if (delay) {
-                    logMessage(`<p>⏳ ${device.name} (${deviceZone.name}): ${newState.on ? 'On' : 'Off'} in ${delay}s</p>`);
+                    logMessage(`⏳ ${device.name} (${deviceZone.name}): ${newState.on ? 'On' : 'Off'} in ${delay}s`);
                   } else {
-                    logMessage(`<p>⏩ ${device.name} (${deviceZone.name}): ${newState.on ? 'On' : 'Off'}</p>`);
+                    logMessage(`💡 ${device.name} (${deviceZone.name}): ${newState.on ? 'On' : 'Off'}`);
                   }
 
                   setTimeout(() => {
@@ -346,9 +360,9 @@
 
                 if (newState.brightness !== undefined) {
                   if (delay) {
-                    logMessage(`<p>⏳ ${device.name} (${deviceZone.name}): ${newState.brightness}% in ${delay}s</p>`);
+                    logMessage(`⏳ ${device.name} (${deviceZone.name}): ${newState.brightness}% in ${delay}s`);
                   } else {
-                    logMessage(`<p>⏩ ${device.name} (${deviceZone.name}): ${newState.brightness}%</p>`);
+                    logMessage(`💡 ${device.name} (${deviceZone.name}): ${newState.brightness}%`);
                   }
 
                   setTimeout(() => {
@@ -429,7 +443,7 @@
           setStatus();
           state = 'idle';
         }).catch(err => {
-          logMessage(`<p>❌ ${err.message}</p>`);
+          logMessage(`❌ ${err.message}`);
 
           setStatus();
           state = 'idle';
