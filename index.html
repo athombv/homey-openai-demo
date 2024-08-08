@@ -147,6 +147,13 @@
     zones = await homeyApi.zones.getZones();
 
     logMessage('<p>✅ Connected!</p>');
+
+    logMessage('<p>Try saying:</p>');
+    logMessage('<li>"Turn on the lights in the living room."</li>');
+    logMessage('<li>"Turn off all lights on the first floor, but keep bedroom on."</li>');
+    logMessage('<li>"Turn on Standing Light, then turn it off after 5 seconds."</li>');
+    logMessage('<li>"Turn on bedroom at 2 pm."</li>');
+
     logMessage('<p>&nbsp;</p>');
   }).catch(err => {
     logMessage(`<p>❌ ${err.message}</p>`);
@@ -318,7 +325,7 @@
                             // zone: '<the zone of the device>',
                             on: '<the new value as boolean, only if changed or if set with a timer>',
                             brightness: '<the new value as number (1-100), only if changed or if set with a timer>',
-                            delay: '<number, in seconds (1-300), but only if a timer has been requested>'
+                            delay: '<number, in seconds, but only if a timer has been requested>'
                           },
                         },
                       ],
@@ -356,7 +363,7 @@
             logMessage(`<p class="subtle">${data.usage.prompt_tokens} input + ${data.usage.completion_tokens} output = ${data.usage.total_tokens} tokens • $${costsInput} + $${costsOutput} = $${costsInput + costsOutput}</p>`);
             logMessage('<p>&nbsp;</p>');
 
-            for (const action of Object.values(payload.actions)) {
+            for (const action of Object.values(payload.actions ?? {})) {
               for (const [deviceNumber, newState] of Object.entries(action)) {
                 const deviceId = Object.keys(deviceIdsByNumber).find(deviceId => deviceIdsByNumber[deviceId] === parseInt(deviceNumber));
                 if (!deviceId) continue;
