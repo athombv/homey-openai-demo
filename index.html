@@ -1,0 +1,347 @@
+<style type="text/css">
+  html,
+  body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+  }
+
+  body {
+    /* display: flex; */
+    /* flex-direction: column;
+    align-items: center;
+    justify-content: center; */
+  }
+
+  #log {
+    padding: 1em;
+    font-family: monospace;
+  }
+
+  #status {
+    padding: 1em;
+    background: #eee;
+    border-bottom: 1px solid #ddd;
+    font-family: "Helvetica", sans-serif;
+  }
+
+  .message {}
+
+  .message p {
+    margin-bottom: 0;
+  }
+
+  .message .subtle {
+    opacity: 0.3;
+    font-size: 0.8em;
+  }
+</style>
+
+<div id="status"></div>
+<div id="log"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/dat-gui/0.7.9/dat.gui.min.js"></script>
+<script type="text/javascript">
+  const $status = document.getElementById('status');
+  const $log = document.getElementById('log');
+
+  // dat.gui
+  const settings = {
+    apiKey: new URL(window.location).searchParams.get('api_key') || localStorage.getItem('apiKey') || '',
+    ttsVoice: 'nova',
+    ttsModel: 'tts-1-hd',
+    chatModel: 'gpt-4o-mini',
+  };
+
+  const gui = new dat.GUI();
+  gui.add(settings, 'apiKey').name('OpenAI API Key').onChange(value => {
+    localStorage.setItem('apiKey', value);
+  });
+  gui.add(settings, 'ttsVoice', ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer']).name('TTS Voice');
+  gui.add(settings, 'ttsModel', ['tts-1', 'tts-1-hd']).name('TTS Model');
+  gui.add(settings, 'chatModel', ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-4']).name('Chat Model');
+
+  let state = 'idle';
+  let mediaRecorder;
+  let audioPlayer;
+
+  setStatus();
+
+  window.addEventListener('keydown', e => {
+    if (audioPlayer && audioPlayer.paused === false) {
+      audioPlayer.pause();
+
+      setStatus();
+      state = 'idle';
+    }
+
+    if (e.key === ' ' && state === 'idle') {
+      startListening();
+    }
+  });
+
+  window.addEventListener('keyup', e => {
+    if (e.key === ' ' && state === 'listening') {
+      stopListening();
+    }
+  });
+
+  function setStatus(text = 'Hold [Space] to start talking.') {
+    $status.innerText = text;
+  }
+
+  function logMessage(text) {
+    const $message = document.createElement('div');
+    $message.classList.add('message');
+    $message.innerHTML = text;
+    $log.appendChild($message);
+  }
+
+  async function startListening() {
+    // TODO: Stream audio data to OpenAI API
+    let audioChunks = [];
+
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    mediaRecorder = new MediaRecorder(stream);
+
+    // Initialize MediaRecorder
+    mediaRecorder = new MediaRecorder(stream);
+    mediaRecorder.start();
+
+    mediaRecorder.addEventListener('start', () => {
+      state = 'listening';
+      setStatus('Listening...');
+    });
+
+    mediaRecorder.addEventListener('dataavailable', event => {
+      if (event.data.size > 0) {
+        audioChunks.push(event.data);
+      }
+    });
+
+    mediaRecorder.addEventListener('stop', () => {
+      Promise.resolve().then(async () => {
+        state = 'analyzing';
+        setStatus('Analyzing...');
+
+        // Create Blob
+        audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+        audioChunks = [];
+
+        // Initialize request to OpenAI API
+        const formData = new FormData();
+        formData.append('model', 'whisper-1');
+        formData.append('file', audioBlob, 'recording.webm');
+
+        const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${settings.apiKey}`,
+          },
+          body: formData,
+        });
+
+        if (!response.ok) {
+          const body = await response.json().catch(err => {
+            throw new Error(response.statusText ?? response.status);
+          });
+          throw new Error(body.error.message ?? response.statusText ?? response.status);
+        }
+
+        const { text } = await response.json();
+        logMessage(`<p>💁‍♂️ ${text}</p>`);
+        setStatus(text);
+
+        await process({
+          input: text,
+        });
+      }).catch(err => {
+        logMessage(`<p>❌ ${err.message}</p>`);
+        logMessage('<p>&nbsp;</p>');
+
+        setStatus();
+        state = 'idle';
+      });
+    });
+  }
+
+  function stopListening() {
+    mediaRecorder.stop();
+  }
+
+  async function process({
+    input = 'Turn on all lights',
+    model = settings.chatModel,
+  } = {}) {
+    state = 'processing';
+    setStatus('Processing...');
+
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${settings.apiKey}`,
+      },
+      body: JSON.stringify({
+        model,
+        response_format: {
+          type: 'json_object', // TODO: JSON Schema
+        },
+        messages: [
+          {
+            role: 'system',
+            content: 'You are a smart home assistant. You may only answer queries related to smart home, or time. You will change the state of devices, and return the state in the following JSON format: ' + JSON.stringify({
+              text: '<The textual response. Short and to the point.>',
+              actions: [
+                {
+                  '<uuid>': {
+                    on: '<the new value>',
+                    brightness: '<the new value>',
+                    after: '<absolute time in hh:mm:ss, but only if a timer has been requested>'
+                  },
+                },
+              ],
+            }),
+          },
+          {
+            role: 'system',
+            content: 'The current time is ' + new Date().toLocaleTimeString(),
+          },
+          {
+            role: 'system',
+            content: 'This is the JSON state of the smart home: ' + JSON.stringify({
+              '714d26df-94e3-44a8-b995-c1a963301867': {
+                name: 'My Stupid Light',
+                type: 'light',
+                state: {
+                  on: false,
+                  brightness: 100,
+                },
+                zone: 'Ground Floor - Living Room'
+              },
+              '8cb432c1-38b6-4aa4-b5fc-f2cc5f8f32e5': {
+                name: 'Kitchen Light',
+                type: 'light',
+                state: {
+                  on: false,
+                  brightness: 0,
+                },
+                zone: 'Ground Floor - Kitchen'
+              },
+              'c0721675-4d4f-4bc3-8597-2ad9e3b34121': {
+                name: 'Bedroom Light',
+                type: 'light',
+                state: {
+                  on: true,
+                  brightness: 50,
+                },
+                zone: 'First Floor - Bedroom'
+              },
+              '3080639b-b1c9-4eef-9bc1-8d501f5e56c1': {
+                name: 'Kitchen Plug',
+                type: 'plug',
+                state: {
+                  on: false,
+                  brightness: 0,
+                },
+                zone: 'Ground Floor - Kitchen'
+              },
+              '7b667a90-753b-4548-a817-25b13e444ba9': {
+                name: 'Nest Thermostat',
+                type: 'thermostat',
+                state: {
+                  temperature: 23,
+                },
+              }
+            }),
+          },
+          {
+            role: 'user',
+            content: input,
+          },
+        ],
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(response.statusText);
+    }
+
+    const data = await response.json();
+    const content = data.choices[0].message.content;
+    const payload = JSON.parse(content);
+    console.log(JSON.stringify(payload, null, 2));
+
+    logMessage(`<p>🤖 ${payload.text}</p>`);
+    logMessage(`<p class="subtle">${data.usage.prompt_tokens} + ${data.usage.completion_tokens} = ${data.usage.total_tokens} tokens</p>`);
+    logMessage('<p>&nbsp;</p>');
+
+    await tts({
+      input: payload.text,
+    });
+  }
+
+  async function tts({
+    input = 'Hello world!',
+    model = settings.ttsModel,
+    voice = settings.ttsVoice,
+  } = {}) {
+    state = 'speaking';
+    setStatus('Speaking...');
+
+    const response = await fetch('https://api.openai.com/v1/audio/speech', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${settings.apiKey}`
+      },
+      body: JSON.stringify({
+        input,
+        voice,
+        model,
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(response.statusText);
+    }
+
+    // Create a new MediaSource
+    const mediaSource = new MediaSource();
+    audioPlayer = new Audio();
+    audioPlayer.src = URL.createObjectURL(mediaSource);
+
+    mediaSource.addEventListener('sourceopen', async () => {
+      const sourceBuffer = mediaSource.addSourceBuffer('audio/mpeg');
+
+      // Function to stream audio data into the source buffer
+      async function appendStream() {
+        const reader = response.body.getReader();
+        const pump = async () => {
+          const { done, value } = await reader.read();
+          if (done) {
+            mediaSource.endOfStream();
+            return;
+          }
+          sourceBuffer.appendBuffer(value);
+          await new Promise(resolve => {
+            sourceBuffer.addEventListener('updateend', resolve, { once: true });
+          });
+          await pump();
+        };
+        await pump();
+      }
+
+      // Start streaming
+      appendStream();
+    });
+
+    // Play audio as soon as data is available
+    audioPlayer.play().catch(err => console.error(err));
+    audioPlayer.addEventListener('ended', () => {
+      setStatus();
+      state = 'idle';
+    });
+
+  }
+</script>
