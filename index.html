@@ -15,12 +15,20 @@
 
   #log {
     padding: 1em;
+    padding-top: calc(1em + 2 * 1em + 20px);
     font-family: monospace;
   }
 
   #status {
+    position: fixed;
+    left: 0;
+    top: 0;
+    right: 0;
+    height: 20px;
     padding: 1em;
-    background: #eee;
+    background: #00000015;
+    backdrop-filter: blur(5px);
+    -webkit-backdrop-filter: blur(5px);
     border-bottom: 1px solid #ddd;
     font-family: "Helvetica", sans-serif;
   }
@@ -318,9 +326,9 @@
                   '<uuid>': {
                     // name: '<the name of the device>',
                     // zone: '<the zone of the device>',
-                    on: '<the new value as boolean, only if changed>',
-                    brightness: '<the new value as number (1-100), only if changed>',
-                    after: '<absolute time in hh:mm:ss, but only if a timer has been requested>'
+                    on: '<the new value as boolean, only if changed or if set with a timer>',
+                    brightness: '<the new value as number (1-100), only if changed or if set with a timer>',
+                    delay: '<number, in seconds (1-300), but only if a timer has been requested>'
                   },
                 },
               ],
@@ -364,17 +372,32 @@
         if (!device) continue;
 
         const deviceZone = await device.getZone();
+        const delay = newState.delay ?? 0;
 
         if (newState.on !== undefined) {
-          logMessage(`<p>🔌 ${device.name} (${deviceZone.name}): ${newState.on ? 'On' : 'Off'}</p>`);
-          device.setCapabilityValue('onoff', newState.on)
-            .catch(err => console.error(err));
+          if (delay) {
+            logMessage(`<p>⏳ ${device.name} (${deviceZone.name}): ${newState.on ? 'On' : 'Off'} in ${delay} seconds</p>`);
+          } else {
+            logMessage(`<p>⏩ ${device.name} (${deviceZone.name}): ${newState.on ? 'On' : 'Off'}</p>`);
+          }
+
+          setTimeout(() => {
+            device.setCapabilityValue('onoff', newState.on)
+              .catch(err => console.error(err));
+          }, delay * 1000);
         }
 
         if (newState.brightness !== undefined) {
-          logMessage(`<p>💡 ${device.name} (${deviceZone.name}): ${newState.brightness}%</p>`);
-          device.setCapabilityValue('dim', newState.brightness / 100)
-            .catch(err => console.error(err));
+          if (delay) {
+            logMessage(`<p>⏳ ${device.name} (${deviceZone.name}): ${newState.brightness}% in ${delay} seconds</p>`);
+          } else {
+            logMessage(`<p>⏩ ${device.name} (${deviceZone.name}): ${newState.brightness}%</p>`);
+          }
+
+          setTimeout(() => {
+            device.setCapabilityValue('dim', newState.brightness / 100)
+              .catch(err => console.error(err));
+          }, delay * 1000);
         }
       }
     }
