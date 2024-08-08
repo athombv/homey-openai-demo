@@ -57,6 +57,8 @@
   let devices;
   let zones;
 
+  const deviceIdsByNumber = {};
+
   let state = 'idle';
   let mediaRecorder;
   let audioPlayer;
@@ -206,8 +208,13 @@
       }
 
       // Create the device object
-      // TODO: Shorter device ID to reduce the amount of used tokens
-      result[device.id] = {
+      // TODO: Use numbers instead of device ID to reduce the amount of used tokens
+      let deviceIdByNumber = deviceIdsByNumber[device.id];
+      if (!deviceIdByNumber) {
+        deviceIdByNumber = deviceIdsByNumber[device.id] = Object.keys(deviceIdsByNumber).length + 1;
+      }
+
+      result[deviceIdByNumber] = {
         name: device.name,
         type: deviceClass,
         zone: zonesArray.map(zone => zone.name).reverse().join(' -> '),
@@ -215,11 +222,11 @@
       };
 
       if (device.capabilities.includes('onoff')) {
-        result[device.id].state.on = device.capabilitiesObj?.onoff?.value;
+        result[deviceIdByNumber].state.on = device.capabilitiesObj?.onoff?.value;
       }
 
       if (device.capabilities.includes('dim')) {
-        result[device.id].state.brightness = device.capabilitiesObj?.dim?.value * 100;
+        result[deviceIdByNumber].state.brightness = device.capabilitiesObj?.dim?.value * 100;
       }
     }
 
@@ -306,7 +313,7 @@
                       text: '<The textual response. Short and to the point.>',
                       actions: [
                         {
-                          '<uuid>': {
+                          '<device-id>': {
                             // name: '<the name of the device>',
                             // zone: '<the zone of the device>',
                             on: '<the new value as boolean, only if changed or if set with a timer>',
@@ -350,7 +357,10 @@
             logMessage('<p>&nbsp;</p>');
 
             for (const action of Object.values(payload.actions)) {
-              for (const [deviceId, newState] of Object.entries(action)) {
+              for (const [deviceNumber, newState] of Object.entries(action)) {
+                const deviceId = Object.keys(deviceIdsByNumber).find(deviceId => deviceIdsByNumber[deviceId] === parseInt(deviceNumber));
+                if (!deviceId) continue;
+
                 const device = devices[deviceId];
                 if (!device) continue;
 
