@@ -98,7 +98,7 @@
   const athomCloudAPI = new AthomCloudAPI({
     clientId: '66b49b944233725c428a224c',
     clientSecret: 'ad12da1f42aa72f151c031b80d9447b52099f688',
-    redirectUrl: window.location.origin,
+    redirectUrl: window.location.origin + window.location.pathname,
   });
 
   Promise.resolve().then(async () => {
