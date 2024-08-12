@@ -491,7 +491,7 @@
         }
 
         // Create the device object
-        // TODO: Use numbers instead of device ID to reduce the amount of used tokens
+        // We use numbers instead of device ID to reduce the amount of used tokens
         let deviceIdByNumber = deviceIdsByNumber[device.id];
         if (!deviceIdByNumber) {
           deviceIdByNumber = deviceIdsByNumber[device.id] = Object.keys(deviceIdsByNumber).length + 1;
