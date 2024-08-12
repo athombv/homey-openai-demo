@@ -2,7 +2,7 @@
 
 This repository is a proof-of-concept that connects OpenAI to Homey, by transcribing & processing voice commands, and executing them on Homey.
 
-Currently, only lights can be controlled.
+Currently, only lights can be controlled. But it's rather trivial to add more device types such as wall plugs, thermostats etc.
 
 ## Video
 
